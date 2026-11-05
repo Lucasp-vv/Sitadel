@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Logements autorisés et commencés par EPCI</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+    h1 { font-size: 1.4rem; }
+    .filtres { display: flex; flex-wrap: wrap; gap: 1rem 2rem; }
+    .filtres > div { display: flex; flex-direction: column; gap: .3rem; min-width: 0; }
+    label { font-weight: 600; }
+    select { font-size: 1rem; padding: .3rem; max-width: 100%; }
+    .filtres > .series { flex-direction: row; gap: 1.2rem; align-items: center; padding-top: 1.6rem; }
+    .series label { font-weight: normal; display: flex; align-items: center; gap: .35rem; cursor: pointer; }
+    .pastille { display: inline-block; vertical-align: -1px; width: .9rem; height: .9rem; border-radius: 2px; }
+    .graph { position: relative; height: 420px; margin-top: 1.5rem; }
+    table { border-collapse: collapse; margin-top: 1.5rem; width: 100%; font-variant-numeric: tabular-nums; }
+    th, td { padding: .45rem .7rem; border-bottom: 1px solid #ddd; text-align: right; }
+    th:first-child, td:first-child { text-align: left; }
+    caption { text-align: left; font-weight: 600; margin-bottom: .4rem; }
+    .source { font-size: .85rem; color: #666; margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Logements autorisés et commencés par EPCI</h1>
+
+  <div class="filtres">
+    <div>
+      <label for="choix-epci">Intercommunalité</label>
+      <select id="choix-epci"></select>
+    </div>
+    <div>
+      <label for="choix-type">Type de logements</label>
+      <select id="choix-type">
+        <option value="tot">Tous logements</option>
+        <option value="ip">Individuels purs</option>
+        <option value="ig">Individuels groupés</option>
+        <option value="col">Collectifs (y c. résidences)</option>
+        <option value="colhr">Collectifs hors résidences</option>
+        <option value="res">En résidence</option>
+      </select>
+    </div>
+    <div class="series">
+      <label><input type="checkbox" id="voir-aut" checked><span class="pastille" style="background:#2b6cb0"></span>Autorisés</label>
+      <label><input type="checkbox" id="voir-doc" checked><span class="pastille" style="background:#ed8936"></span>Commencés</label>
+    </div>
+  </div>
+
+  <div class="graph"><canvas id="graphique"></canvas></div>
+
+  <table id="moyennes">
+    <caption>Moyenne annuelle de logements</caption>
+    <thead></thead>
+    <tbody></tbody>
+  </table>
+
+  <p class="source">
+    Source : SDES, Sitadel (permis de construire). Autorisés : année d'autorisation.
+    Commencés : année d'ouverture de chantier. Communes rattachées à leur EPCI au 1<sup>er</sup> janvier 2026 (Insee).
+  </p>
+
+  <script>
+    // Périodes de calcul des moyennes (modifiables ici)
+    const PERIODES = [[2018, 2020], [2021, 2023], [2024, 2026]];
+
+    const SERIES = [
+      { cle: "aut", nom: "Autorisés", couleur: "#2b6cb0", case: document.getElementById("voir-aut") },
+      { cle: "doc", nom: "Commencés", couleur: "#ed8936", case: document.getElementById("voir-doc") }
+    ];
+
+    let donnees, graphique;
+    const selEpci = document.getElementById("choix-epci");
+    const selType = document.getElementById("choix-type");
+    const nf = new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 0 });
+
+    fetch("data.json")
+      .then(r => r.json())
+      .then(d => {
+        donnees = d;
+        d.epci.forEach(e => selEpci.add(new Option(e.nom, e.code)));
+        selEpci.addEventListener("change", afficher);
+        selType.addEventListener("change", afficher);
+        SERIES.forEach(se => se.case.addEventListener("change", afficher));
+        afficher();
+      });
+
+    function afficher() {
+      const type = selType.value;
+      const lignes = donnees.serie.filter(l => l.epci === selEpci.value);
+      const visibles = SERIES.filter(se => se.case.checked);
+      const config = {
+        type: "bar",
+        data: {
+          labels: lignes.map(l => l.annee),
+          datasets: visibles.map(se => ({
+            label: se.nom, data: lignes.map(l => l[type + "_" + se.cle]), backgroundColor: se.couleur
+          }))
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: { y: { beginAtZero: true, title: { display: true, text: "Nombre de logements" } } },
+          plugins: {
+            legend: { display: false },
+            tooltip: { callbacks: { label: c => `${c.dataset.label} : ${c.parsed.y.toLocaleString("fr-FR")}` } }
+          }
+        }
+      };
+      if (graphique) graphique.destroy();
+      graphique = new Chart(document.getElementById("graphique"), config);
+      afficherMoyennes(lignes, type, visibles);
+    }
+
+    // Moyenne = somme sur la période / nombre d'années (une année sans permis compte pour 0)
+    function afficherMoyennes(lignes, type, visibles) {
+      const table = document.getElementById("moyennes");
+      table.querySelector("thead").innerHTML =
+        "<tr><th></th>" + PERIODES.map(([d, f]) => `<th>${d}-${f}</th>`).join("") + "</tr>";
+      table.querySelector("tbody").innerHTML = visibles.map(se => {
+        const cellules = PERIODES.map(([d, f]) => {
+          const somme = lignes
+            .filter(l => +l.annee >= d && +l.annee <= f)
+            .reduce((s, l) => s + l[type + "_" + se.cle], 0);
+          return `<td>${nf.format(somme / (f - d + 1))}</td>`;
+        }).join("");
+        return `<tr><td><span class="pastille" style="background:${se.couleur}"></span> ${se.nom}</td>${cellules}</tr>`;
+      }).join("");
+      table.style.display = visibles.length ? "" : "none";
+    }
+  </script>
+</body>
+</html>
