@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Logements autorisés et commencés par EPCI</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+    h1 { font-size: 1.4rem; }
+    .filtres { display: flex; flex-wrap: wrap; gap: 1rem 2rem; }
+    .filtres div { display: flex; flex-direction: column; gap: .3rem; min-width: 0; }
+    label { font-weight: 600; }
+    select { font-size: 1rem; padding: .3rem; max-width: 100%; }
+    .graph { position: relative; height: 420px; margin-top: 1.5rem; }
+    .source { font-size: .85rem; color: #666; margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Logements autorisés et commencés par EPCI</h1>
+
+  <div class="filtres">
+    <div>
+      <label for="choix-epci">Intercommunalité</label>
+      <select id="choix-epci"></select>
+    </div>
+    <div>
+      <label for="choix-type">Type de logements</label>
+      <select id="choix-type">
+        <option value="tot">Tous logements</option>
+        <option value="ip">Individuels purs</option>
+        <option value="ig">Individuels groupés</option>
+        <option value="col">Collectifs (y c. résidences)</option>
+        <option value="colhr">Collectifs hors résidences</option>
+        <option value="res">En résidence</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="graph"><canvas id="graphique"></canvas></div>
+
+  <p class="source">
+    Source : SDES, Sitadel (permis de construire). Autorisés : année d'autorisation.
+    Commencés : année d'ouverture de chantier. Communes rattachées à leur EPCI au 1<sup>er</sup> janvier 2026 (Insee).
+  </p>
+
+  <script>
+    let donnees, graphique;
+    const selEpci = document.getElementById("choix-epci");
+    const selType = document.getElementById("choix-type");
+
+    fetch("data.json")
+      .then(r => r.json())
+      .then(d => {
+        donnees = d;
+        d.epci.forEach(e => selEpci.add(new Option(e.nom, e.code)));
+        selEpci.addEventListener("change", afficher);
+        selType.addEventListener("change", afficher);
+        afficher();
+      });
+
+    function afficher() {
+      const type = selType.value;
+      const lignes = donnees.serie.filter(l => l.epci === selEpci.value);
+      const config = {
+        type: "bar",
+        data: {
+          labels: lignes.map(l => l.annee),
+          datasets: [
+            { label: "Autorisés", data: lignes.map(l => l[type + "_aut"]), backgroundColor: "#2b6cb0" },
+            { label: "Commencés", data: lignes.map(l => l[type + "_doc"]), backgroundColor: "#ed8936" }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: { y: { beginAtZero: true, title: { display: true, text: "Nombre de logements" } } },
+          plugins: {
+            tooltip: { callbacks: { label: c => `${c.dataset.label} : ${c.parsed.y.toLocaleString("fr-FR")}` } }
+          }
+        }
+      };
+      if (graphique) graphique.destroy();
+      graphique = new Chart(document.getElementById("graphique"), config);
+    }
+  </script>
+</body>
+</html>
