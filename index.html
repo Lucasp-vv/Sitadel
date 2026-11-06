@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Logements par EPCI</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+    h1 { font-size: 1.4rem; }
+    h2 { font-size: 1.15rem; margin: 2.8rem 0 .3rem; padding-top: 1.2rem; border-top: 1px solid #ddd; }
+    .filtres { display: flex; flex-wrap: wrap; gap: 1rem 2rem; }
+    .filtres > div { display: flex; flex-direction: column; gap: .3rem; min-width: 0; }
+    .filtres > .series { flex-direction: row; gap: 1.2rem; align-items: center; padding-top: 1.6rem; }
+    .collant { position: sticky; top: 0; background: #fff; padding: .6rem 0; z-index: 2; border-bottom: 1px solid #eee; }
+    label { font-weight: 600; }
+    .series label { font-weight: normal; display: flex; align-items: center; gap: .35rem; cursor: pointer; }
+    .pastille { display: inline-block; vertical-align: -1px; width: .9rem; height: .9rem; border-radius: 2px; }
+    select { font-size: 1rem; padding: .3rem; max-width: 100%; }
+    .graph { position: relative; height: 380px; margin-top: 1rem; }
+    .note { font-size: .85rem; color: #666; margin: .2rem 0 0; }
+    table { border-collapse: collapse; margin-top: 1.5rem; width: 100%; font-variant-numeric: tabular-nums; }
+    th, td { padding: .45rem .7rem; border-bottom: 1px solid #ddd; text-align: right; }
+    th:first-child, td:first-child { text-align: left; }
+    caption { text-align: left; font-weight: 600; margin-bottom: .4rem; }
+    .source { font-size: .85rem; color: #666; margin-top: 2.5rem; }
+  </style>
+</head>
+<body>
+  <h1>Construction de logements par intercommunalité</h1>
+
+  <!-- Filtres communs aux trois graphiques -->
+  <div class="filtres collant">
+    <div>
+      <label for="choix-epci">Intercommunalité</label>
+      <select id="choix-epci"></select>
+    </div>
+    <div class="series">
+      <label><input type="checkbox" id="voir-aut" checked><span class="pastille" style="background:#2b6cb0"></span>Autorisés</label>
+      <label><input type="checkbox" id="voir-doc" checked><span class="pastille" style="background:#ed8936"></span>Commencés</label>
+    </div>
+  </div>
+
+  <!-- 1. Nombre de logements -->
+  <h2>Nombre de logements</h2>
+  <div class="filtres">
+    <div>
+      <label for="choix-type">Type de logements</label>
+      <select id="choix-type">
+        <option value="tot">Tous logements</option>
+        <option value="ip">Individuels purs</option>
+        <option value="ig">Individuels groupés</option>
+        <option value="col">Collectifs (y c. résidences)</option>
+        <option value="colhr">Collectifs hors résidences</option>
+        <option value="res">En résidence</option>
+      </select>
+    </div>
+  </div>
+  <div class="graph"><canvas id="graph-nombre"></canvas></div>
+  <table id="moyennes">
+    <caption>Moyenne annuelle de logements</caption>
+    <thead></thead>
+    <tbody></tbody>
+  </table>
+
+  <!-- 2. Densité -->
+  <h2>Densité médiane des projets de logements</h2>
+  <p class="note">
+    Logements par hectare, tous projets : nombre de logements ÷ (surface du terrain en ha) × 0,8
+    pour tenir compte des espaces publics alentour.
+  </p>
+  <div class="graph"><canvas id="graph-densite"></canvas></div>
+
+  <!-- 3. Surface des terrains en individuel diffus -->
+  <h2>Surface médiane des terrains en individuel diffus</h2>
+  <p class="note">En m². Projets créant un seul logement, en individuel pur.</p>
+  <div class="graph"><canvas id="graph-terrain"></canvas></div>
+
+  <p class="source">
+    Source : SDES, Sitadel (permis de construire). Autorisés : année d'autorisation.
+    Commencés : année d'ouverture de chantier. Communes rattachées à leur EPCI au 1<sup>er</sup> janvier 2026 (Insee).
+    Les médianes calculées sur moins de <span id="seuil"></span> projets ne sont pas affichées.
+  </p>
+
+  <script>
+    // ---- Réglages ----
+    const PERIODES = [[2018, 2020], [2021, 2023], [2024, 2026]];  // moyennes du tableau
+    const SEUIL_PROJETS = 5;  // médiane masquée en dessous de ce nombre de projets
+
+    const SERIES = [
+      { cle: "aut", nom: "Autorisés", couleur: "#2b6cb0", case: document.getElementById("voir-aut") },
+      { cle: "doc", nom: "Commencés", couleur: "#ed8936", case: document.getElementById("voir-doc") }
+    ];
+
+    const nf0 = new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 0 });
+    const nf1 = new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 1 });
+    document.getElementById("seuil").textContent = SEUIL_PROJETS;
+
+    let donnees;
+    const graphiques = {};
+    const selEpci = document.getElementById("choix-epci");
+    const selType = document.getElementById("choix-type");
+
+    fetch("data.json")
+      .then(r => r.json())
+      .then(d => {
+        donnees = d;
+        d.epci.forEach(e => selEpci.add(new Option(e.nom, e.code)));
+        [selEpci, selType, ...SERIES.map(se => se.case)].forEach(el => el.addEventListener("change", afficher));
+        afficher();
+      });
+
+    function afficher() {
+      const lignes = donnees.serie.filter(l => l.epci === selEpci.value);
+      const visibles = SERIES.filter(se => se.case.checked);
+      const type = selType.value;
+
+      // 1. Nombre de logements
+      dessiner("graph-nombre", lignes, visibles, {
+        valeur: (l, cle) => l[`${type}_${cle}`],
+        titreY: "Nombre de logements",
+        format: v => nf0.format(v)
+      });
+      afficherMoyennes(lignes, type, visibles);
+
+      // 2. Densité médiane
+      dessiner("graph-densite", lignes, visibles, {
+        valeur: (l, cle) => mediane(l, "densite", cle),
+        effectif: (l, cle) => l[`densite_n_${cle}`],
+        titreY: "Logements / ha",
+        format: v => nf1.format(v) + " lgt/ha"
+      });
+
+      // 3. Surface médiane des terrains en individuel diffus
+      dessiner("graph-terrain", lignes, visibles, {
+        valeur: (l, cle) => mediane(l, "terrain", cle),
+        effectif: (l, cle) => l[`terrain_n_${cle}`],
+        titreY: "m²",
+        format: v => nf0.format(v) + " m²"
+      });
+    }
+
+    // Médiane, ou null si trop peu de projets
+    function mediane(l, nom, cle) {
+      const n = l[`${nom}_n_${cle}`];
+      return n >= SEUIL_PROJETS ? l[`${nom}_med_${cle}`] : null;
+    }
+
+    function dessiner(id, lignes, visibles, opt) {
+      const config = {
+        type: "bar",
+        data: {
+          labels: lignes.map(l => l.annee),
+          datasets: visibles.map(se => ({
+            label: se.nom,
+            cle: se.cle,
+            data: lignes.map(l => opt.valeur(l, se.cle)),
+            backgroundColor: se.couleur
+          }))
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: { y: { beginAtZero: true, title: { display: true, text: opt.titreY } } },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: c => {
+                  let txt = `${c.dataset.label} : ${opt.format(c.parsed.y)}`;
+                  if (opt.effectif) txt += ` (${nf0.format(opt.effectif(lignes[c.dataIndex], c.dataset.cle))} projets)`;
+                  return txt;
+                }
+              }
+            }
+          }
+        }
+      };
+      if (graphiques[id]) graphiques[id].destroy();
+      graphiques[id] = new Chart(document.getElementById(id), config);
+    }
+
+    // Moyenne = somme sur la période / nombre d'années (une année sans permis compte pour 0)
+    function afficherMoyennes(lignes, type, visibles) {
+      const table = document.getElementById("moyennes");
+      table.querySelector("thead").innerHTML =
+        "<tr><th></th>" + PERIODES.map(([d, f]) => `<th>${d}-${f}</th>`).join("") + "</tr>";
+      table.querySelector("tbody").innerHTML = visibles.map(se => {
+        const cellules = PERIODES.map(([d, f]) => {
+          const somme = lignes
+            .filter(l => +l.annee >= d && +l.annee <= f)
+            .reduce((s, l) => s + l[`${type}_${se.cle}`], 0);
+          return `<td>${nf0.format(somme / (f - d + 1))}</td>`;
+        }).join("");
+        return `<tr><td><span class="pastille" style="background:${se.couleur}"></span> ${se.nom}</td>${cellules}</tr>`;
+      }).join("");
+      table.style.display = visibles.length ? "" : "none";
+    }
+  </script>
+</body>
+</html>
